@@ -1,8 +1,6 @@
 import eventlet
-import os
-# Optimiza el servidor para manejar muchas conexiones al mismo tiempo
 eventlet.monkey_patch()
-
+import os
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, join_room, emit
 
