@@ -14,31 +14,30 @@ const contenedorVideos = document.getElementById("videos");
 const emojiPicker = document.getElementById("emojiPicker");
 const btnEmoji = document.getElementById("btnEmoji");
 
-// Variables globales para el manejo de video y conexiones múltiples
+// Variables globales
 let localStream = null;
-let peerConnections = {}; // Diccionario para gestionar una conexión por cada usuario
+let peerConnections = {}; 
 let audioEnabled = true;
 let videoEnabled = true;
 
-// Configuración de servidor STUN para comunicar navegadores a través de internet
 const rtcConfig = {
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
 };
 
-// Registro y Entrada 
+// --- REGISTRO Y ENTRADA ---
 btnEntrar.onclick = () => {
     const nombre = document.getElementById("nombre").value;
     const sala = document.getElementById("sala").value;
     if(!nombre || !sala) return alert("Pon tu nombre y sala");
     
-    // Enviamos los datos al servidor para que nos asigne una sala lógica
+    // IMPORTANTE: Entramos a la sala siempre, tengamos cámara o no
     socket.emit("register", { nombre, sala, sid: socket.id });
+    btnEntrar.disabled = true;
+    btnEntrar.innerText = "Dentro de la Sala ✅";
 };
 
-// Lógica de Emojis 
+// --- LÓGICA DE EMOJIS ---
 const emojis = ["😀", "😂", "😎", "😍", "🙌", "🔥", "💯", "👍", "🚀", "💻", "✨", "🎉", "🤔", "👀", "👋"];
-
-// Genera visualmente los emojis en el panel
 emojis.forEach(emoji => {
     const span = document.createElement("span");
     span.innerText = emoji;
@@ -50,30 +49,31 @@ emojis.forEach(emoji => {
     emojiPicker.appendChild(span);
 });
 
-// Control para mostrar u ocultar el selector de emojis
 btnEmoji.onclick = (e) => {
     e.stopPropagation();
     emojiPicker.style.display = emojiPicker.style.display === "grid" ? "none" : "grid";
 };
-
 document.onclick = () => { emojiPicker.style.display = "none"; };
 
-// Control de Cámara y Micrófono) 
+// --- CONTROL DE CÁMARA ---
 btnCamara.onclick = async () => {
     try {
-        // Solicita acceso de cámara y audio al cliente
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         videoLocal.srcObject = localStream;
         btnCamara.disabled = true;
         btnCamara.innerText = "Cámara Activa ✅";
         btnMute.style.display = "inline-block";
         btnVideoOff.style.display = "inline-block";
+
+        // Si ya estamos en una llamada, avisamos que ahora sí tenemos video
+        Object.values(peerConnections).forEach(pc => {
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+        });
     } catch (e) {
-        alert("No se pudo acceder a la cámara");
+        alert("No se pudo acceder a la cámara, entrarás como espectador.");
     }
 };
 
-// Apaga o prende el audio del flujo local
 btnMute.onclick = () => {
     audioEnabled = !audioEnabled;
     localStream.getAudioTracks()[0].enabled = audioEnabled;
@@ -81,7 +81,6 @@ btnMute.onclick = () => {
     btnMute.style.background = audioEnabled ? "#4CAF50" : "#f44336";
 };
 
-// Apaga o prende el video del flujo local
 btnVideoOff.onclick = () => {
     videoEnabled = !videoEnabled;
     localStream.getVideoTracks()[0].enabled = videoEnabled;
@@ -89,29 +88,28 @@ btnVideoOff.onclick = () => {
     btnVideoOff.style.background = videoEnabled ? "#4CAF50" : "#f44336";
 };
 
-// WebRTC Mesh Conexiones Punto a Punto
+// --- WebRTC LÓGICA MESH ---
 
-// Cuando el servidor avisa que alguien entró, iniciamos una conexión directa con él
 socket.on("user_joined", data => {
-    if (localStream) crearPeer(data.sid, true);
+    // FIX: Ahora creamos el Peer aunque localStream sea null
+    crearPeer(data.sid, true);
 });
 
 function crearPeer(remoteSid, isInitiator) {
-    // Crea la conexión Punto a punto para un usuario específico
     const pc = new RTCPeerConnection(rtcConfig);
     peerConnections[remoteSid] = pc;
     
-    // Agregamos nuestro video y audio a esta conexión
-    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    // FIX: Solo agregamos tracks si la cámara está encendida
+    if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
 
-    // Intercambio de candidatos de red a través del servidor de Sockets
     pc.onicecandidate = e => {
         if (e.candidate) {
             socket.emit("webrtc_candidate", { candidate: e.candidate, target: remoteSid });
         }
     };
 
-    // Cuando recibimos el video de la otra persona, lo ponemos en un elemento nuevo
     pc.ontrack = e => {
         let remoteVid = document.getElementById(`video_${remoteSid}`);
         if (!remoteVid) {
@@ -124,7 +122,6 @@ function crearPeer(remoteSid, isInitiator) {
         remoteVid.srcObject = e.streams[0];
     };
 
-    // Si somos los que iniciamos, creamos la oferta técnica de video 
     if (isInitiator) {
         pc.createOffer().then(offer => {
             pc.setLocalDescription(offer);
@@ -133,9 +130,8 @@ function crearPeer(remoteSid, isInitiator) {
     }
 }
 
-// Escucha del socket para recibir ofertas de video de otros usuarios
 socket.on("webrtc_offer", async data => {
-    if (!localStream) return;
+    // FIX: Quitamos el 'return' si no hay localStream
     const remoteSid = data.from;
     crearPeer(remoteSid, false);
     await peerConnections[remoteSid].setRemoteDescription(new RTCSessionDescription(data.offer));
@@ -144,19 +140,18 @@ socket.on("webrtc_offer", async data => {
     socket.emit("webrtc_answer", { answer, target: remoteSid });
 });
 
-// Escucha del socket para recibir respuestas a nuestras ofertas
 socket.on("webrtc_answer", async data => {
-    await peerConnections[data.from].setRemoteDescription(new RTCSessionDescription(data.answer));
+    if(peerConnections[data.from]) {
+        await peerConnections[data.from].setRemoteDescription(new RTCSessionDescription(data.answer));
+    }
 });
 
-// Escucha del socket para recibir datos de red de los otros usuarios
 socket.on("webrtc_candidate", async data => {
     if (peerConnections[data.from]) {
         await peerConnections[data.from].addIceCandidate(new RTCIceCandidate(data.candidate));
     }
 });
 
-// Limpieza de la conexión cuando un usuario se desconecta
 socket.on("user_left", data => {
     if (peerConnections[data.sid]) {
         peerConnections[data.sid].close();
@@ -166,9 +161,7 @@ socket.on("user_left", data => {
     }
 });
 
-// Chat Cliente-Servidor
-
-// Envía el mensaje al servidor para que lo reparta a la sala
+// --- CHAT ---
 btnEnviar.onclick = () => {
     const msg = mensajeInput.value;
     if(msg) {
@@ -177,13 +170,11 @@ btnEnviar.onclick = () => {
     }
 };
 
-// Recibe mensajes de otros usuarios a través del servidor
 socket.on("receive_message", data => {
     chat.innerHTML += `<p><b>${data.nombre}:</b> ${data.mensaje}</p>`;
     chat.scrollTop = chat.scrollHeight;
 });
 
-// Mensajes del sistema (entradas y salidas de usuarios)
 socket.on("system", msg => {
     chat.innerHTML += `<p style="color: #888; font-size: 0.9em;"><i>${msg}</i></p>`;
 });
